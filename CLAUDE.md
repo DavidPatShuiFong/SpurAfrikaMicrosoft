@@ -40,8 +40,6 @@ testthat::test_file("tests/testthat/test-compress_image.R")
   - `is_target_jpg()` / `small_name()` — filename predicate and naming helpers
   - `%||%` — null-coalescing operator (defined for R < 4.4 compat)
 
-- `R/hello.R` — scaffolding placeholder; can be removed once real functions are documented
-
 ## Authentication
 
 `Microsoft365R` uses OAuth via a browser prompt on first run; credentials are cached locally for subsequent runs. There are no API keys to manage in code.
