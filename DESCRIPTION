@@ -1,0 +1,24 @@
+Package: SpurAfrikaMicrosoft
+Type: Package
+Title: Microsoft 365 Utilities for Spur Afrika
+Version: 0.1.0
+Authors@R: person(
+    "David", "Fong",
+    email = "david.fong@spurafrika.onmicrosoft.com",
+    role = c("aut", "cre")
+  )
+Description: Provides utilities for automating Microsoft 365 tasks at Spur Afrika.
+    Currently includes tools for bulk-compressing JPEG images stored in SharePoint,
+    uploading compressed versions alongside originals without modifying source files.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Imports:
+    cli,
+    fs,
+    magick,
+    Microsoft365R
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+RoxygenNote: 7.3.3
