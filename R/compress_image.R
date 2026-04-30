@@ -76,7 +76,7 @@ process_folder <- function(
 
   items      <- folder$list_items()          # data frame of child items
   item_names <- items$name
-  is_folder  <- items$`@microsoft.graph.isFolder` %||% rep(FALSE, nrow(items))
+  is_folder  <- items$isdir
 
   # Collect names of existing _small files for quick lookup
   small_files_present <- item_names[grepl(
@@ -185,8 +185,8 @@ process_folder <- function(
 #' @param sharepoint_site_url Character. Full URL of the SharePoint site,
 #'   e.g. `"https://yourorg.sharepoint.com/sites/YourSite"`.
 #' @param sharepoint_folder Character. Path to the starting folder relative to
-#'   the site's default document library root,
-#'   e.g. `"Shared Documents/Photos"`.
+#'   the root of the default document library (i.e. relative to "Documents"),
+#'   e.g. `"Photos"` or `"Photos/Events/2025"`.
 #' @param quality Integer (1--100). JPEG compression quality for the compressed
 #'   version. Default `60L`.
 #' @param max_width_px Integer or `NULL`. Images wider than this value are
@@ -207,13 +207,13 @@ process_folder <- function(
 #' \dontrun{
 #' compress_sharepoint_image(
 #'   sharepoint_site_url = "https://yourorg.sharepoint.com/sites/YourSite",
-#'   sharepoint_folder   = "Shared Documents/Photos",
+#'   sharepoint_folder   = "Photos",
 #'   dry_run             = TRUE
 #' )
 #' }
 compress_sharepoint_image <- function(
     sharepoint_site_url = "https://yourorg.sharepoint.com/sites/YourSite",
-    sharepoint_folder = "Shared Documents/Photos",  # relative to site root
+    sharepoint_folder = "Photos",  # relative to default document folder
     quality = 60L, # JPEG quality for compressed version (1-100)
     max_width_px = 1920L, # resize to this width if wider (NULL to skip)
     small_suffix = "_small", # appended before .jpg to photo_small.jpg
@@ -227,7 +227,7 @@ compress_sharepoint_image <- function(
   if (dry_run) cli::cli_alert_warning("DRY RUN MODE - no files will be uploaded")
 
   # Connect to SharePoint (opens browser for auth on first run)
-  site  <- Microsoft365R::get_sharepoint_site(sharepoint_site_url)
+  site  <- Microsoft365R::get_sharepoint_site(site_url = sharepoint_site_url)
   drive <- site$get_drive()                          # default document library
   root  <- drive$get_item(sharepoint_folder)         # starting folder
 

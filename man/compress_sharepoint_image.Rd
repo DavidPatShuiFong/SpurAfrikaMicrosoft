@@ -6,7 +6,7 @@
 \usage{
 compress_sharepoint_image(
   sharepoint_site_url = "https://yourorg.sharepoint.com/sites/YourSite",
-  sharepoint_folder = "Shared Documents/Photos",
+  sharepoint_folder = "Photos",
   quality = 60L,
   max_width_px = 1920L,
   small_suffix = "_small",
@@ -18,8 +18,8 @@ compress_sharepoint_image(
 e.g. `"https://yourorg.sharepoint.com/sites/YourSite"`.}
 
 \item{sharepoint_folder}{Character. Path to the starting folder relative to
-the site's default document library root,
-e.g. `"Shared Documents/Photos"`.}
+the root of the default document library (i.e. relative to "Documents"),
+e.g. `"Photos"` or `"Photos/Events/2025"`.}
 
 \item{quality}{Integer (1--100). JPEG compression quality for the compressed
 version. Default `60L`.}
@@ -48,7 +48,7 @@ have one. Original files are never modified.
 \dontrun{
 compress_sharepoint_image(
   sharepoint_site_url = "https://yourorg.sharepoint.com/sites/YourSite",
-  sharepoint_folder   = "Shared Documents/Photos",
+  sharepoint_folder   = "Photos",
   dry_run             = TRUE
 )
 }
