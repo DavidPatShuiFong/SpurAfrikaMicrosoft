@@ -49,4 +49,3 @@ testthat::test_file("tests/testthat/test-compress_image.R")
 ## Key design notes
 
 - `dry_run = TRUE` is the safe default: it reports what would happen without uploading anything.
-- The `NAMESPACE` currently uses `exportPattern("^[[:alpha:]]+")`, which exports everything. Switch to explicit `@export` roxygen tags as the package grows.
