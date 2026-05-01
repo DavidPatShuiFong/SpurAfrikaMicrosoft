@@ -17,6 +17,101 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
+# MAIN FUNCTION
+# -----------------------------------------------------------------------------
+
+#' Compress JPEG images in a SharePoint folder
+#'
+#' Recursively scans a SharePoint document library folder for JPEG files and
+#' uploads a compressed `_small.jpg` version of each image that does not already
+#' have one. Original files are never modified.
+#'
+#' @param sharepoint_site_url Character. Full URL of the SharePoint site,
+#'   e.g. `"https://yourorg.sharepoint.com/sites/YourSite"`.
+#' @param sharepoint_folder Character. Path to the starting folder relative to
+#'   the root of the default document library (i.e. relative to "Documents"),
+#'   e.g. `"Photos"` or `"Photos/Events/2025"`.
+#' @param quality Integer (1--100). JPEG compression quality for the compressed
+#'   version. Default `60L`.
+#' @param max_width_px Integer or `NULL`. Images wider than this value are
+#'   resized to this width (in pixels) before compression. Pass `NULL` to skip
+#'   resizing. Default `1920L`.
+#' @param small_suffix Character. Suffix inserted before `.jpg` to name the
+#'   compressed file (e.g. `"photo_small.jpg"`). Default `"_small"`.
+#' @param dry_run Logical. If `TRUE` (the default), report planned actions
+#'   without uploading anything.
+#'
+#' @return Invisibly returns a list of result records, one per JPEG
+#'   encountered. Each record is a named list with at minimum an `action` field:
+#'   `"compressed"`, `"dry_run"`, `"skipped"`, or `"error"`.
+#'
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' compress_sharepoint_image(
+#'   sharepoint_site_url = "https://yourorg.sharepoint.com/sites/YourSite",
+#'   sharepoint_folder   = "Photos",
+#'   dry_run             = TRUE
+#' )
+#' }
+compress_sharepoint_image <- function(
+    sharepoint_site_url = "https://yourorg.sharepoint.com/sites/YourSite",
+    sharepoint_folder   = "Photos",  # relative to default document folder
+    quality             = 60L,       # JPEG quality for compressed version (1-100)
+    max_width_px        = 1920L,     # resize to this width if wider (NULL to skip)
+    small_suffix        = "_small",  # appended before .jpg to photo_small.jpg
+    dry_run             = TRUE       # TRUE = report actions without uploading. FALSE = upload
+) {
+
+  cli::cli_h1("SharePoint JPG Compressor")
+  cli::cli_alert_info("Site   : {sharepoint_site_url}")
+  cli::cli_alert_info("Folder : {sharepoint_folder}")
+  cli::cli_alert_info("Quality: {quality}%  |  Max width: {max_width_px %||% 'none'}px")
+  if (dry_run) cli::cli_alert_warning("DRY RUN MODE - no files will be uploaded")
+
+  # Connect to SharePoint (opens browser for auth on first run)
+  site  <- Microsoft365R::get_sharepoint_site(site_url = sharepoint_site_url)
+  drive <- site$get_drive()                          # default document library
+  root  <- drive$get_item(sharepoint_folder)         # starting folder
+
+  # Walk and process
+  results <- process_folder(
+    folder       = root,
+    path         = sharepoint_folder,
+    quality      = quality,
+    max_width_px = max_width_px,
+    small_suffix = small_suffix,
+    dry_run      = dry_run
+  )
+
+  # -----------------------------------------------------------------------------
+  # print summary
+  # -----------------------------------------------------------------------------
+
+  cli::cli_h1("Summary")
+
+  actions <- vapply(results, `[[`, character(1), "action")
+  cli::cli_bullets(c(
+    "v" = "Compressed : {sum(actions == 'compressed')}",
+    "i" = "Dry-run    : {sum(actions == 'dry_run')}",
+    ">" = "Skipped    : {sum(actions == 'skipped')}",
+    "x" = "Errors     : {sum(actions == 'error')}"
+  ))
+
+  compressed <- results[actions %in% c("compressed", "dry_run")]
+  if (length(compressed)) {
+    savings <- vapply(compressed, `[[`, numeric(1), "saving")
+    cli::cli_alert_info(
+      "Average size reduction: {round(mean(savings), 1)}%  |  ",
+      "Range: {round(min(savings), 1)}% to {round(max(savings), 1)}%"
+    )
+  }
+
+  cli::cli_alert_success("Done.")
+}
+
+# -----------------------------------------------------------------------------
 # HELPERS
 # -----------------------------------------------------------------------------
 
@@ -29,8 +124,9 @@ is_target_jpg <- function(name, small_suffix) {
 
 #' @noRd
 is_target_png <- function(name, small_suffix) {
-  # Return TRUE if `name` looks like a .png (case-insensitive)
-  grepl("\\.png$", name, ignore.case = TRUE)
+  # Return TRUE if `name` looks like a .png (case-insensitive, not _small.png)
+  grepl("\\.png$", name, ignore.case = TRUE) &&
+    !grepl(paste0(small_suffix, "\\.png$"), name, ignore.case = TRUE)
 }
 
 #' @noRd
@@ -75,55 +171,53 @@ process_folder <- function(
   cli::cli_h2("Scanning: {path}")
 
   items      <- folder$list_items()          # data frame of child items
-  item_names <- items$name
-  is_folder  <- items$isdir
 
   # Collect names of existing _small files for quick lookup
-  small_files_present <- item_names[grepl(
-    paste0(small_suffix, "\\.jpg$"), item_names, ignore.case = TRUE
+  small_files_present <- items$name[grepl(
+    paste0(small_suffix, "\\.jpg$"), items$name, ignore.case = TRUE
   )]
 
-  for (i in seq_len(nrow(items))) {
-    item_name <- item_names[[i]]
+  purrr::pmap(items, function(...) {
+    item <- list(...)
 
     # Recurse into sub-folders
-    if (isTRUE(is_folder[[i]])) {
-      sub_folder <- folder$get_item(item_name)
-      results    <- process_folder(
+    if (isTRUE(item$isdir)) {
+      sub_folder <- folder$get_item(item$name)
+      results    <<- process_folder(
         sub_folder,
-        path         = fs::path(path, item_name),
+        path         = fs::path(path, item$name),
         results      = results,
         quality      = quality,
         max_width_px = max_width_px,
         small_suffix = small_suffix,
         dry_run      = dry_run
       )
-      next
+      return(NULL)
     }
 
     # Skip non-target files
-    if (!is_target_jpg(item_name, small_suffix)) next
+    if (!is_target_jpg(item$name, small_suffix)) return(NULL)
 
-    expected_small <- small_name(item_name, small_suffix)
-    full_path      <- fs::path(path, item_name)
+    expected_small <- small_name(item$name, small_suffix)
+    full_path      <- fs::path(path, item$name)
 
     # Skip if compressed version already exists
     if (expected_small %in% small_files_present) {
-      cli::cli_alert_success("SKIP  {item_name}  (small version exists)")
-      results <- c(results, list(list(
+      cli::cli_alert_success("SKIP  {item$name}  (small version exists)")
+      results <<- c(results, list(list(
         file = full_path, action = "skipped", reason = "small exists"
       )))
-      next
+      return(NULL)
     }
 
     # Download, compress, upload
-    cli::cli_alert_info("FOUND {item_name}")
+    cli::cli_alert_info("FOUND {item$name}")
 
     tryCatch({
       # Download original as raw bytes
-      item      <- folder$get_item(item_name)
+      item_file <- folder$get_item(item$name)
       tmp_in    <- tempfile(fileext = ".jpg")
-      item$download(dest = tmp_in, overwrite = TRUE)
+      item_file$download(dest = tmp_in, overwrite = TRUE)
       orig_bytes <- readBin(tmp_in, "raw", n = file.size(tmp_in))
       orig_kb    <- round(length(orig_bytes) / 1024, 1)
 
@@ -148,7 +242,7 @@ process_folder <- function(
       }
 
       unlink(tmp_in)
-      results <- c(results, list(list(
+      results <<- c(results, list(list(
         file     = full_path,
         action   = if (dry_run) "dry_run" else "compressed",
         orig_kb  = orig_kb,
@@ -157,112 +251,17 @@ process_folder <- function(
       )))
 
     }, error = function(e) {
-      cli::cli_alert_danger("  ERROR processing {item_name}: {conditionMessage(e)}")
+      cli::cli_alert_danger("  ERROR processing {item$name}: {conditionMessage(e)}")
       results <<- c(results, list(list(
         file   = full_path,
         action = "error",
         reason = conditionMessage(e)
       )))
     })
-  }
+  })
 
   results
 }
 
 # Null-coalescing operator (available in R 4.4+ natively; defined here for compat)
 `%||%` <- function(a, b) if (!is.null(a)) a else b
-
-# -----------------------------------------------------------------------------
-# MAIN FUNCTION
-# -----------------------------------------------------------------------------
-
-#' Compress JPEG images in a SharePoint folder
-#'
-#' Recursively scans a SharePoint document library folder for JPEG files and
-#' uploads a compressed `_small.jpg` version of each image that does not already
-#' have one. Original files are never modified.
-#'
-#' @param sharepoint_site_url Character. Full URL of the SharePoint site,
-#'   e.g. `"https://yourorg.sharepoint.com/sites/YourSite"`.
-#' @param sharepoint_folder Character. Path to the starting folder relative to
-#'   the root of the default document library (i.e. relative to "Documents"),
-#'   e.g. `"Photos"` or `"Photos/Events/2025"`.
-#' @param quality Integer (1--100). JPEG compression quality for the compressed
-#'   version. Default `60L`.
-#' @param max_width_px Integer or `NULL`. Images wider than this value are
-#'   resized to this width (in pixels) before compression. Pass `NULL` to skip
-#'   resizing. Default `1920L`.
-#' @param small_suffix Character. Suffix inserted before `.jpg` to name the
-#'   compressed file (e.g. `"photo_small.jpg"`). Default `"_small"`.
-#' @param dry_run Logical. If `TRUE` (the default), report planned actions
-#'   without uploading anything.
-#'
-#' @return Invisibly returns a list of result records, one per JPEG
-#'   encountered. Each record is a named list with at minimum an `action` field:
-#'   `"compressed"`, `"dry_run"`, `"skipped"`, or `"error"`.
-#'
-#' @export
-#'
-#' @examples
-#' \dontrun{
-#' compress_sharepoint_image(
-#'   sharepoint_site_url = "https://yourorg.sharepoint.com/sites/YourSite",
-#'   sharepoint_folder   = "Photos",
-#'   dry_run             = TRUE
-#' )
-#' }
-compress_sharepoint_image <- function(
-    sharepoint_site_url = "https://yourorg.sharepoint.com/sites/YourSite",
-    sharepoint_folder = "Photos",  # relative to default document folder
-    quality = 60L, # JPEG quality for compressed version (1-100)
-    max_width_px = 1920L, # resize to this width if wider (NULL to skip)
-    small_suffix = "_small", # appended before .jpg to photo_small.jpg
-    dry_run = TRUE # TRUE = report actions without uploading. FALSE = upload
-    ) {
-
-  cli::cli_h1("SharePoint JPG Compressor")
-  cli::cli_alert_info("Site   : {sharepoint_site_url}")
-  cli::cli_alert_info("Folder : {sharepoint_folder}")
-  cli::cli_alert_info("Quality: {quality}%  |  Max width: {max_width_px %||% 'none'}px")
-  if (dry_run) cli::cli_alert_warning("DRY RUN MODE - no files will be uploaded")
-
-  # Connect to SharePoint (opens browser for auth on first run)
-  site  <- Microsoft365R::get_sharepoint_site(site_url = sharepoint_site_url)
-  drive <- site$get_drive()                          # default document library
-  root  <- drive$get_item(sharepoint_folder)         # starting folder
-
-  # Walk and process
-  results <- process_folder(
-    root,
-    path         = sharepoint_folder,
-    quality      = quality,
-    max_width_px = max_width_px,
-    small_suffix = small_suffix,
-    dry_run      = dry_run
-  )
-
-  # -----------------------------------------------------------------------------
-  # SUMMARY
-  # -----------------------------------------------------------------------------
-
-  cli::cli_h1("Summary")
-
-  actions <- vapply(results, `[[`, character(1), "action")
-  cli::cli_bullets(c(
-    "v" = "Compressed : {sum(actions == 'compressed')}",
-    "i" = "Dry-run    : {sum(actions == 'dry_run')}",
-    ">" = "Skipped    : {sum(actions == 'skipped')}",
-    "x" = "Errors     : {sum(actions == 'error')}"
-  ))
-
-  compressed <- results[actions %in% c("compressed", "dry_run")]
-  if (length(compressed)) {
-    savings <- vapply(compressed, `[[`, numeric(1), "saving")
-    cli::cli_alert_info(
-      "Average size reduction: {round(mean(savings), 1)}%  |  ",
-      "Range: {round(min(savings), 1)}% to {round(max(savings), 1)}%"
-    )
-  }
-
-  cli::cli_alert_success("Done.")
-}

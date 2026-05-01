@@ -29,6 +29,25 @@ test_that("is_target_jpg respects a custom small_suffix", {
   expect_false(is_target_jpg("photo_thumb.jpg", "_thumb"))
 })
 
+# is_target_png -----------------------------------------------------------
+
+test_that("is_target_png returns TRUE for plain png files", {
+  expect_true(is_target_png("photo.png", "_small"))
+  expect_true(is_target_png("photo.PNG", "_small"))
+  expect_true(is_target_png("my photo.png", "_small"))
+})
+
+test_that("is_target_png returns FALSE for non-PNG files", {
+  expect_false(is_target_png("photo.jpg", "_small"))
+  expect_false(is_target_png("photo.txt", "_small"))
+  expect_false(is_target_png("photo", "_small"))
+})
+
+test_that("is_target_png does not filter already-compressed files", {
+  # small_suffix is accepted but unused — _small.png is still a target
+  expect_true(is_target_png("photo_small.png", "_small"))
+})
+
 # small_name --------------------------------------------------------------
 
 test_that("small_name appends suffix before .jpg", {
