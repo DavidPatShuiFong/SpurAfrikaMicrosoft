@@ -10,6 +10,7 @@ compress_sharepoint_image(
   quality = 60L,
   max_width_px = 1920L,
   small_suffix = "_small",
+  workers = NULL,
   dry_run = TRUE
 )
 }
@@ -30,6 +31,10 @@ resizing. Default `1920L`.}
 
 \item{small_suffix}{Character. Suffix inserted before `.jpg` to name the
 compressed file (e.g. `"photo_small.jpg"`). Default `"_small"`.}
+
+\item{workers}{Integer. Number of parallel processes to use. Default is
+NULL, in which case parallel processes will be one less than the detected
+cores.}
 
 \item{dry_run}{Logical. If `TRUE` (the default), report planned actions
 without uploading anything.}

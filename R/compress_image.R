@@ -38,6 +38,9 @@
 #'   resizing. Default `1920L`.
 #' @param small_suffix Character. Suffix inserted before `.jpg` to name the
 #'   compressed file (e.g. `"photo_small.jpg"`). Default `"_small"`.
+#' @param workers Integer. Number of parallel processes to use. Default is
+#'   NULL, in which case parallel processes will be one less than the detected
+#'   cores.
 #' @param dry_run Logical. If `TRUE` (the default), report planned actions
 #'   without uploading anything.
 #'
@@ -61,8 +64,11 @@ compress_sharepoint_image <- function(
     quality             = 60L,       # JPEG quality for compressed version (1-100)
     max_width_px        = 1920L,     # resize to this width if wider (NULL to skip)
     small_suffix        = "_small",  # appended before .jpg to photo_small.jpg
+    workers             = NULL,      # number of parallel processes
     dry_run             = TRUE       # TRUE = report actions without uploading. FALSE = upload
 ) {
+
+  tictoc::tic() # start timer
 
   cli::cli_h1("SharePoint JPG Compressor")
   cli::cli_alert_info("Site   : {sharepoint_site_url}")
@@ -70,23 +76,107 @@ compress_sharepoint_image <- function(
   cli::cli_alert_info("Quality: {quality}%  |  Max width: {max_width_px %||% 'none'}px")
   if (dry_run) cli::cli_alert_warning("DRY RUN MODE - no files will be uploaded")
 
-  # Connect to SharePoint (opens browser for auth on first run)
-  site  <- Microsoft365R::get_sharepoint_site(site_url = sharepoint_site_url)
-  drive <- site$get_drive()                          # default document library
-  root  <- drive$get_item(sharepoint_folder)         # starting folder
-
-  # Walk and process
-  results <- process_folder(
-    folder       = root,
-    path         = sharepoint_folder,
-    quality      = quality,
-    max_width_px = max_width_px,
-    small_suffix = small_suffix,
-    dry_run      = dry_run
+  future::plan(
+    strategy = future::multisession,
+    workers = (workers %||% (parallel::detectCores() - 1))
   )
 
+  # Connect to SharePoint (opens browser for auth on first run)
+  site  <- Microsoft365R::get_sharepoint_site(site_url = sharepoint_site_url)
+  drive <- site$get_drive()                   # default document library
+  root  <- drive$get_item(sharepoint_folder)  # starting folder
+
   # -----------------------------------------------------------------------------
-  # print summary
+  # Phase 1: scan folder tree — collect all target JPEGs sequentially
+  # -----------------------------------------------------------------------------
+
+  targets <- collect_targets(root, sharepoint_folder, small_suffix)
+  cli::cli_alert_info("Found {length(targets)} JPEG{?s} to evaluate")
+
+  # -----------------------------------------------------------------------------
+  # Phase 2: process files in parallel with a progress bar
+  #
+  # process_files is defined inside this function so furrr serialises it with its
+  # captured environment (quality, max_width_px, dry_run, compress_image).
+  # -----------------------------------------------------------------------------
+
+  process_files <- function(t) {
+    if (t$small_exists) {
+      return(list(file = t$full_path, action = "skipped", reason = "small exists"))
+    }
+
+    tryCatch({
+      item_file  <- t$folder$get_item(t$item_name)
+      tmp_in     <- tempfile(fileext = ".jpg")
+      item_file$download(dest = tmp_in, overwrite = TRUE)
+      orig_bytes <- readBin(tmp_in, "raw", n = file.size(tmp_in))
+      orig_kb    <- round(length(orig_bytes) / 1024, 1)
+      unlink(tmp_in)
+
+      small_bytes <- compress_image(orig_bytes, quality = quality, max_width = max_width_px)
+      small_kb    <- round(length(small_bytes) / 1024, 1)
+      saving_pct  <- round((1 - small_kb / orig_kb) * 100, 1)
+
+      if (!dry_run) {
+        tmp_out <- tempfile(fileext = ".jpg")
+        writeBin(small_bytes, tmp_out)
+        t$folder$upload(tmp_out, dest = t$expected_small)
+        unlink(tmp_out)
+      }
+
+      list(
+        file     = t$full_path,
+        action   = if (dry_run) "dry_run" else "compressed",
+        orig_kb  = orig_kb,
+        small_kb = small_kb,
+        saving   = saving_pct
+      )
+    }, error = function(e) {
+      list(file = t$full_path, action = "error", reason = conditionMessage(e))
+    })
+  }
+
+  progressr::handlers("cli")
+  results <- progressr::with_progress({
+    p <- progressr::progressor(steps = length(targets))
+    furrr::future_map(targets, function(t) {
+      result <- process_files(t)
+      p()
+      result
+    }, .options = furrr::furrr_options(seed = TRUE))
+  })
+
+  # -----------------------------------------------------------------------------
+  # Phase 3: print per-file results grouped by directory
+  # -----------------------------------------------------------------------------
+
+  cli::cli_h1("Results")
+
+  files <- vapply(results, `[[`, character(1), "file")
+  dirs  <- as.character(dirname(files))
+
+  for (d in sort(unique(dirs))) {
+    cli::cli_h2(d)
+    for (r in results[dirs == d]) {
+      switch(r$action,
+        compressed = cli::cli_bullets(c(
+          "v" = "{basename(r$file)}: {r$orig_kb} KB -> {r$small_kb} KB ({r$saving}% smaller, uploaded)"
+        )),
+        dry_run    = cli::cli_bullets(c(
+          ">" = "{basename(r$file)}: {r$orig_kb} KB -> {r$small_kb} KB ({r$saving}% smaller)"
+        )),
+        skipped    = cli::cli_bullets(c(
+          "i" = "{basename(r$file)}: skipped (small version exists)"
+        )),
+        error      = cli::cli_bullets(c(
+          "x" = "{basename(r$file)}: ERROR - {r$reason}"
+        ))
+      )
+    }
+  }
+
+  # -----------------------------------------------------------------------------
+  # Phase 4: summary counts
   # -----------------------------------------------------------------------------
 
   cli::cli_h1("Summary")
@@ -99,16 +189,18 @@ compress_sharepoint_image <- function(
     "x" = "Errors     : {sum(actions == 'error')}"
   ))
 
-  compressed <- results[actions %in% c("compressed", "dry_run")]
-  if (length(compressed)) {
-    savings <- vapply(compressed, `[[`, numeric(1), "saving")
+  compressed_results <- results[actions %in% c("compressed", "dry_run")]
+  if (length(compressed_results)) {
+    savings <- vapply(compressed_results, `[[`, numeric(1), "saving")
     cli::cli_alert_info(
       "Average size reduction: {round(mean(savings), 1)}%  |  ",
       "Range: {round(min(savings), 1)}% to {round(max(savings), 1)}%"
     )
   }
 
+  tictoc::toc()
   cli::cli_alert_success("Done.")
+  invisible(results)
 }
 
 # -----------------------------------------------------------------------------
@@ -136,12 +228,9 @@ small_name <- function(filename, small_suffix) {
 }
 
 #' @noRd
-compress_image <- function(
-    raw_bytes, quality = 60L,
-    max_width = 1920L){
+compress_image <- function(raw_bytes, quality = 60L, max_width = 1920L) {
   # Compress a raw JPEG byte vector and return compressed bytes
-
-  img <- magick::image_read(raw_bytes)
+  img  <- magick::image_read(raw_bytes)
   info <- magick::image_info(img)
 
   if (!is.null(max_width) && info$width > max_width) {
@@ -149,118 +238,63 @@ compress_image <- function(
     cli::cli_alert_info("  Resized from {info$width}px to {max_width}px wide")
   }
 
-  compressed <- magick::image_write(
-    img,
-    format  = "jpeg",
-    quality = quality
-  )
+  compressed <- magick::image_write(img, format = "jpeg", quality = quality)
   compressed  # raw vector
 }
 
 # -----------------------------------------------------------------------------
-# RECURSIVE FOLDER WALKER
+# RECURSIVE FOLDER SCANNER
 # -----------------------------------------------------------------------------
 
 #' @noRd
-process_folder <- function(
-    folder, path, results = list(),
-    quality, max_width_px, small_suffix, dry_run){
-  # Walk `folder` (a SharePoint drive item) and process all target JPGs
-  # Returns a list of result records (for a summary at the end)
+collect_targets <- function(folder, path, small_suffix, .pb = NULL) {
+  # Recursively walk `folder` and return a flat list of target-file descriptors.
+  # Each descriptor is a named list: folder, item_name, full_path,
+  # expected_small, small_exists.
+  # .pb: cli progress bar id; created at the top level and passed through recursion.
 
-  cli::cli_h2("Scanning: {path}")
+  top_level <- is.null(.pb)
+  if (top_level) {
+    .pb <- cli::cli_progress_bar(
+      name        = "Scanning",
+      total       = NA,
+      clear       = FALSE,
+      .auto_close = FALSE
+    )
+  }
 
-  items      <- folder$list_items()          # data frame of child items
+  # Show which folder is being listed (the slow API call)
+  cli::cli_progress_update(id = .pb, status = path, inc = 0L)
+  items <- folder$list_items()
 
-  # Collect names of existing _small files for quick lookup
-  small_files_present <- items$name[grepl(
+  small_files <- items$name[grepl(
     paste0(small_suffix, "\\.jpg$"), items$name, ignore.case = TRUE
   )]
 
-  purrr::pmap(items, function(...) {
-    item <- list(...)
+  targets <- list()
 
-    # Recurse into sub-folders
-    if (isTRUE(item$isdir)) {
-      sub_folder <- folder$get_item(item$name)
-      results    <<- process_folder(
-        sub_folder,
-        path         = fs::path(path, item$name),
-        results      = results,
-        quality      = quality,
-        max_width_px = max_width_px,
-        small_suffix = small_suffix,
-        dry_run      = dry_run
-      )
-      return(NULL)
+  for (i in seq_len(nrow(items))) {
+    nm    <- items$name[i]
+    isdir <- isTRUE(items$isdir[i])
+
+    if (isdir) {
+      sub     <- folder$get_item(nm)
+      targets <- c(targets, collect_targets(sub, fs::path(path, nm), small_suffix, .pb))
+    } else if (is_target_jpg(nm, small_suffix)) {
+      cli::cli_progress_update(id = .pb, inc = 1L)
+      exp_small <- small_name(nm, small_suffix)
+      targets   <- c(targets, list(list(
+        folder         = folder,
+        item_name      = nm,
+        full_path      = fs::path(path, nm),
+        expected_small = exp_small,
+        small_exists   = exp_small %in% small_files
+      )))
     }
+  }
 
-    # Skip non-target files
-    if (!is_target_jpg(item$name, small_suffix)) return(NULL)
-
-    expected_small <- small_name(item$name, small_suffix)
-    full_path      <- fs::path(path, item$name)
-
-    # Skip if compressed version already exists
-    if (expected_small %in% small_files_present) {
-      cli::cli_alert_success("SKIP  {item$name}  (small version exists)")
-      results <<- c(results, list(list(
-        file = full_path, action = "skipped", reason = "small exists"
-      )))
-      return(NULL)
-    }
-
-    # Download, compress, upload
-    cli::cli_alert_info("FOUND {item$name}")
-
-    tryCatch({
-      # Download original as raw bytes
-      item_file <- folder$get_item(item$name)
-      tmp_in    <- tempfile(fileext = ".jpg")
-      item_file$download(dest = tmp_in, overwrite = TRUE)
-      orig_bytes <- readBin(tmp_in, "raw", n = file.size(tmp_in))
-      orig_kb    <- round(length(orig_bytes) / 1024, 1)
-
-      # Compress in memory
-      small_bytes <- compress_image(orig_bytes, quality = quality, max_width = max_width_px)
-      small_kb    <- round(length(small_bytes) / 1024, 1)
-      saving_pct  <- round((1 - small_kb / orig_kb) * 100, 1)
-
-      cli::cli_alert_success(
-        "  {orig_kb} KB to {small_kb} KB  ({saving_pct}% smaller)"
-      )
-
-      if (!dry_run) {
-        # Write to temp file then upload
-        tmp_out <- tempfile(fileext = ".jpg")
-        writeBin(small_bytes, tmp_out)
-        folder$upload(tmp_out, dest = expected_small)
-        cli::cli_alert_success("  Uploaded: {expected_small}")
-        unlink(tmp_out)
-      } else {
-        cli::cli_alert_warning("  DRY RUN - upload skipped")
-      }
-
-      unlink(tmp_in)
-      results <<- c(results, list(list(
-        file     = full_path,
-        action   = if (dry_run) "dry_run" else "compressed",
-        orig_kb  = orig_kb,
-        small_kb = small_kb,
-        saving   = saving_pct
-      )))
-
-    }, error = function(e) {
-      cli::cli_alert_danger("  ERROR processing {item$name}: {conditionMessage(e)}")
-      results <<- c(results, list(list(
-        file   = full_path,
-        action = "error",
-        reason = conditionMessage(e)
-      )))
-    })
-  })
-
-  results
+  if (top_level) cli::cli_progress_done(id = .pb)
+  targets
 }
 
 # Null-coalescing operator (available in R 4.4+ natively; defined here for compat)

@@ -44,8 +44,7 @@ test_that("is_target_png returns FALSE for non-PNG files", {
 })
 
 test_that("is_target_png does not filter already-compressed files", {
-  # small_suffix is accepted but unused — _small.png is still a target
-  expect_true(is_target_png("photo_small.png", "_small"))
+  expect_false(is_target_png("photo_small.png", "_small"))
 })
 
 # small_name --------------------------------------------------------------
