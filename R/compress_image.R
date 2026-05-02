@@ -38,6 +38,12 @@
 #'   resizing. Default `1920L`.
 #' @param small_suffix Character. Suffix inserted before `.jpg` to name the
 #'   compressed file (e.g. `"photo_small.jpg"`). Default `"_small"`.
+#' @param file_prefix Character or `NULL`. If provided, only JPEG files whose
+#'   names begin with this string are eligible for compression (e.g. `"202604"`
+#'   to process only April 2026 photos). Default `NULL` (no filtering).
+#' @param file_prefix_regex Logical. If `TRUE`, `file_prefix` is treated as a
+#'   regular expression passed to [grepl()] rather than a literal prefix
+#'   (e.g. `"^2026(04|05)"` to match April or May 2026). Default `FALSE`.
 #' @param dry_run Logical. If `TRUE` (the default), report planned actions
 #'   without uploading anything.
 #'
@@ -61,6 +67,8 @@ compress_sharepoint_image <- function(
     quality             = 60L,       # JPEG quality for compressed version (1-100)
     max_width_px        = 1920L,     # resize to this width if wider (NULL to skip)
     small_suffix        = "_small",  # appended before .jpg to photo_small.jpg
+    file_prefix         = NULL,      # only process files starting with this string (NULL = all)
+    file_prefix_regex   = FALSE,     # treat file_prefix as a regular expression
     dry_run             = TRUE       # TRUE = report actions without uploading. FALSE = upload
 ) {
 
@@ -70,6 +78,7 @@ compress_sharepoint_image <- function(
   cli::cli_alert_info("Site   : {sharepoint_site_url}")
   cli::cli_alert_info("Folder : {sharepoint_folder}")
   cli::cli_alert_info("Quality: {quality}%  |  Max width: {max_width_px %||% 'none'}px")
+  if (!is.null(file_prefix)) cli::cli_alert_info("Prefix filter: {file_prefix}")
   if (dry_run) cli::cli_alert_warning("DRY RUN MODE - no files will be uploaded")
 
   # Connect to SharePoint (opens browser for auth on first run)
@@ -81,7 +90,8 @@ compress_sharepoint_image <- function(
   # Phase 1: scan folder tree — collect all target JPEGs sequentially
   # -----------------------------------------------------------------------------
 
-  targets <- collect_targets(root, sharepoint_folder, small_suffix)
+  targets <- collect_targets(root, sharepoint_folder, small_suffix,
+                             file_prefix = file_prefix, file_prefix_regex = file_prefix_regex)
   cli::cli_alert_info("Found {length(targets)} JPEG{?s} to evaluate")
 
   # -----------------------------------------------------------------------------
@@ -240,10 +250,12 @@ compress_image <- function(raw_bytes, quality = 60L, max_width = 1920L) {
 # -----------------------------------------------------------------------------
 
 #' @noRd
-collect_targets <- function(folder, path, small_suffix, .pb = NULL) {
+collect_targets <- function(folder, path, small_suffix,
+                            file_prefix = NULL, file_prefix_regex = FALSE, .pb = NULL) {
   # Recursively walk `folder` and return a flat list of target-file descriptors.
   # Each descriptor is a named list: folder, item_name, full_path,
   # expected_small, small_exists.
+  # file_prefix: when non-NULL, only include JPEGs matching this string/regex.
   # .pb: cli progress bar id; created at the top level and passed through recursion.
 
   top_level <- is.null(.pb)
@@ -273,8 +285,11 @@ collect_targets <- function(folder, path, small_suffix, .pb = NULL) {
 
     if (isdir) {
       sub     <- folder$get_item(nm)
-      targets <<- c(targets, collect_targets(sub, fs::path(path, nm), small_suffix, .pb))
-    } else if (is_target_jpg(nm, small_suffix)) {
+      targets <<- c(targets, collect_targets(sub, fs::path(path, nm), small_suffix,
+                                             file_prefix, file_prefix_regex, .pb))
+    } else if (is_target_jpg(nm, small_suffix) &&
+               (is.null(file_prefix) ||
+                if (file_prefix_regex) grepl(file_prefix, nm) else startsWith(nm, file_prefix))) {
       cli::cli_progress_update(id = .pb, inc = 1L)
       exp_small <- small_name(nm, small_suffix)
       targets   <<- c(targets, list(list(
