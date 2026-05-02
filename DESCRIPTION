@@ -4,7 +4,7 @@ Title: Microsoft 365 Utilities for Spur Afrika
 Version: 0.1.0
 Authors@R: person(
     "David", "Fong",
-    email = "david.fong@spurafrika.onmicrosoft.com",
+    email = "david.fong@spurafrika.org",
     role = c("aut", "cre")
   )
 Description: Provides utilities for automating Microsoft 365 tasks at Spur Afrika.
@@ -18,8 +18,7 @@ Imports:
     fs,
     magick,
     Microsoft365R,
-    furrr,
-    future,
+    purrr,
     progressr,
     tictoc
 Suggests:

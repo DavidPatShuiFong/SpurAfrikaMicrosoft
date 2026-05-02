@@ -38,9 +38,6 @@
 #'   resizing. Default `1920L`.
 #' @param small_suffix Character. Suffix inserted before `.jpg` to name the
 #'   compressed file (e.g. `"photo_small.jpg"`). Default `"_small"`.
-#' @param workers Integer. Number of parallel processes to use. Default is
-#'   NULL, in which case parallel processes will be one less than the detected
-#'   cores.
 #' @param dry_run Logical. If `TRUE` (the default), report planned actions
 #'   without uploading anything.
 #'
@@ -64,7 +61,6 @@ compress_sharepoint_image <- function(
     quality             = 60L,       # JPEG quality for compressed version (1-100)
     max_width_px        = 1920L,     # resize to this width if wider (NULL to skip)
     small_suffix        = "_small",  # appended before .jpg to photo_small.jpg
-    workers             = NULL,      # number of parallel processes
     dry_run             = TRUE       # TRUE = report actions without uploading. FALSE = upload
 ) {
 
@@ -75,11 +71,6 @@ compress_sharepoint_image <- function(
   cli::cli_alert_info("Folder : {sharepoint_folder}")
   cli::cli_alert_info("Quality: {quality}%  |  Max width: {max_width_px %||% 'none'}px")
   if (dry_run) cli::cli_alert_warning("DRY RUN MODE - no files will be uploaded")
-
-  future::plan(
-    strategy = future::multisession,
-    workers = (workers %||% (parallel::detectCores() - 1))
-  )
 
   # Connect to SharePoint (opens browser for auth on first run)
   site  <- Microsoft365R::get_sharepoint_site(site_url = sharepoint_site_url)
@@ -96,7 +87,7 @@ compress_sharepoint_image <- function(
   # -----------------------------------------------------------------------------
   # Phase 2: process files in parallel with a progress bar
   #
-  # process_files is defined inside this function so furrr serialises it with its
+  # process_files is defined inside this function so purrr serialises it with its
   # captured environment (quality, max_width_px, dry_run, compress_image).
   # -----------------------------------------------------------------------------
 
@@ -139,11 +130,14 @@ compress_sharepoint_image <- function(
   progressr::handlers("cli")
   results <- progressr::with_progress({
     p <- progressr::progressor(steps = length(targets))
-    furrr::future_map(targets, function(t) {
+    purrr::map(targets, function(t) {
       result <- process_files(t)
       p()
       result
-    }, .options = furrr::furrr_options(seed = TRUE))
+    }
+    # if we used furrr we would need to set random number options
+    # ,.options = furrr::furrr_options(seed = TRUE)
+    )
   })
 
   # -----------------------------------------------------------------------------
@@ -235,7 +229,6 @@ compress_image <- function(raw_bytes, quality = 60L, max_width = 1920L) {
 
   if (!is.null(max_width) && info$width > max_width) {
     img <- magick::image_resize(img, paste0(max_width, "x"))
-    cli::cli_alert_info("  Resized from {info$width}px to {max_width}px wide")
   }
 
   compressed <- magick::image_write(img, format = "jpeg", quality = quality)
@@ -273,17 +266,18 @@ collect_targets <- function(folder, path, small_suffix, .pb = NULL) {
 
   targets <- list()
 
-  for (i in seq_len(nrow(items))) {
-    nm    <- items$name[i]
-    isdir <- isTRUE(items$isdir[i])
+  purrr::pmap(items, function(...) {
+    item  <- list(...)
+    nm    <- item$name
+    isdir <- isTRUE(item$isdir)
 
     if (isdir) {
       sub     <- folder$get_item(nm)
-      targets <- c(targets, collect_targets(sub, fs::path(path, nm), small_suffix, .pb))
+      targets <<- c(targets, collect_targets(sub, fs::path(path, nm), small_suffix, .pb))
     } else if (is_target_jpg(nm, small_suffix)) {
       cli::cli_progress_update(id = .pb, inc = 1L)
       exp_small <- small_name(nm, small_suffix)
-      targets   <- c(targets, list(list(
+      targets   <<- c(targets, list(list(
         folder         = folder,
         item_name      = nm,
         full_path      = fs::path(path, nm),
@@ -291,7 +285,7 @@ collect_targets <- function(folder, path, small_suffix, .pb = NULL) {
         small_exists   = exp_small %in% small_files
       )))
     }
-  }
+  })
 
   if (top_level) cli::cli_progress_done(id = .pb)
   targets
