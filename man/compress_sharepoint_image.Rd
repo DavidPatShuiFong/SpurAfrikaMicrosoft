@@ -2,14 +2,16 @@
 % Please edit documentation in R/compress_image.R
 \name{compress_sharepoint_image}
 \alias{compress_sharepoint_image}
-\title{Compress JPEG images in a SharePoint folder}
+\title{Compress JPEG and PNG images in a SharePoint folder}
 \usage{
 compress_sharepoint_image(
   sharepoint_site_url = "https://yourorg.sharepoint.com/sites/YourSite",
   sharepoint_folder = "Photos",
   quality = 60L,
-  max_width_px = 1920L,
+  max_width_px = NULL,
   small_suffix = "_small",
+  file_prefix = NULL,
+  file_prefix_regex = FALSE,
   dry_run = TRUE
 )
 }
@@ -26,23 +28,31 @@ version. Default `60L`.}
 
 \item{max_width_px}{Integer or `NULL`. Images wider than this value are
 resized to this width (in pixels) before compression. Pass `NULL` to skip
-resizing. Default `1920L`.}
+resizing. Default `NULL`.}
 
-\item{small_suffix}{Character. Suffix inserted before `.jpg` to name the
-compressed file (e.g. `"photo_small.jpg"`). Default `"_small"`.}
+\item{small_suffix}{Character. Suffix inserted before the extension to name
+the compressed file (e.g. `"photo_small.jpg"`). Default `"_small"`.}
+
+\item{file_prefix}{Character or `NULL`. If provided, only image files whose
+names begin with this string are eligible for compression (e.g. `"202604"`
+to process only April 2026 photos). Default `NULL` (no filtering).}
+
+\item{file_prefix_regex}{Logical. If `TRUE`, `file_prefix` is treated as a
+regular expression passed to [grepl()] rather than a literal prefix
+(e.g. `"^2026(04|05)"` to match April or May 2026). Default `FALSE`.}
 
 \item{dry_run}{Logical. If `TRUE` (the default), report planned actions
 without uploading anything.}
 }
 \value{
-Invisibly returns a list of result records, one per JPEG
+Invisibly returns a list of result records, one per image
   encountered. Each record is a named list with at minimum an `action` field:
   `"compressed"`, `"dry_run"`, `"skipped"`, or `"error"`.
 }
 \description{
-Recursively scans a SharePoint document library folder for JPEG files and
-uploads a compressed `_small.jpg` version of each image that does not already
-have one. Original files are never modified.
+Recursively scans a SharePoint document library folder for JPEG and PNG files
+and uploads a compressed `_small.jpg` version of each image that does not
+already have a `_small.jpg` (or `_small.png`). Original files are never modified.
 }
 \examples{
 \dontrun{

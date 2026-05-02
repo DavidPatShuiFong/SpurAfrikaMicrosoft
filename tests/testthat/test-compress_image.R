@@ -47,22 +47,40 @@ test_that("is_target_png does not filter already-compressed files", {
   expect_false(is_target_png("photo_small.png", "_small"))
 })
 
-# small_name --------------------------------------------------------------
+# small_name_jpg ----------------------------------------------------------
 
-test_that("small_name appends suffix before .jpg", {
-  expect_equal(small_name("photo.jpg", "_small"), "photo_small.jpg")
+test_that("small_name_jpg appends suffix before .jpg", {
+  expect_equal(small_name_jpg("photo.jpg", "_small"), "photo_small.jpg")
 })
 
-test_that("small_name is case-insensitive on the extension", {
-  expect_equal(small_name("photo.JPG", "_small"), "photo_small.jpg")
+test_that("small_name_jpg is case-insensitive on the extension", {
+  expect_equal(small_name_jpg("photo.JPG", "_small"), "photo_small.jpg")
 })
 
-test_that("small_name works with a custom suffix", {
-  expect_equal(small_name("photo.jpg", "_thumb"), "photo_thumb.jpg")
+test_that("small_name_jpg works with a custom suffix", {
+  expect_equal(small_name_jpg("photo.jpg", "_thumb"), "photo_thumb.jpg")
 })
 
-test_that("small_name handles filenames with dots in the stem", {
-  expect_equal(small_name("my.photo.jpg", "_small"), "my.photo_small.jpg")
+test_that("small_name_jpg handles filenames with dots in the stem", {
+  expect_equal(small_name_jpg("my.photo.jpg", "_small"), "my.photo_small.jpg")
+})
+
+# small_name_png ----------------------------------------------------------
+
+test_that("small_name_png appends suffix before .png", {
+  expect_equal(small_name_png("photo.png", "_small"), "photo_small.png")
+})
+
+test_that("small_name_png is case-insensitive on the extension", {
+  expect_equal(small_name_png("photo.PNG", "_small"), "photo_small.png")
+})
+
+test_that("small_name_png works with a custom suffix", {
+  expect_equal(small_name_png("photo.png", "_thumb"), "photo_thumb.png")
+})
+
+test_that("small_name_png handles filenames with dots in the stem", {
+  expect_equal(small_name_png("my.photo.png", "_small"), "my.photo_small.png")
 })
 
 # compress_image ----------------------------------------------------------
