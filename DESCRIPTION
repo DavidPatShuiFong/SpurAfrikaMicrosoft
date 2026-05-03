@@ -16,10 +16,12 @@ LazyData: true
 Imports:
     cli,
     fs,
+    furrr,
+    future,
     magick,
     Microsoft365R,
-    purrr,
     progressr,
+    purrr,
     tictoc
 Suggests:
     testthat (>= 3.0.0)

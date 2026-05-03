@@ -12,6 +12,7 @@ compress_sharepoint_image(
   small_suffix = "_small",
   file_prefix = NULL,
   file_prefix_regex = FALSE,
+  n_workers = 1,
   dry_run = TRUE
 )
 }
@@ -40,6 +41,8 @@ to process only April 2026 photos). Default `NULL` (no filtering).}
 \item{file_prefix_regex}{Logical. If `TRUE`, `file_prefix` is treated as a
 regular expression passed to [grepl()] rather than a literal prefix
 (e.g. `"^2026(04|05)"` to match April or May 2026). Default `FALSE`.}
+
+\item{n_workers}{Integer. Number of parallel processes. Default `1`}
 
 \item{dry_run}{Logical. If `TRUE` (the default), report planned actions
 without uploading anything.}

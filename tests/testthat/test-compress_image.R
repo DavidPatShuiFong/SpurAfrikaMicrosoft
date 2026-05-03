@@ -65,22 +65,22 @@ test_that("small_name_jpg handles filenames with dots in the stem", {
   expect_equal(small_name_jpg("my.photo.jpg", "_small"), "my.photo_small.jpg")
 })
 
-# small_name_png ----------------------------------------------------------
+# small_name_png_to_jpg ---------------------------------------------------
 
-test_that("small_name_png appends suffix before .png", {
-  expect_equal(small_name_png("photo.png", "_small"), "photo_small.png")
+test_that("small_name_png_to_jpg appends suffix and changes extension to .jpg", {
+  expect_equal(small_name_png_to_jpg("photo.png", "_small"), "photo_small.jpg")
 })
 
-test_that("small_name_png is case-insensitive on the extension", {
-  expect_equal(small_name_png("photo.PNG", "_small"), "photo_small.png")
+test_that("small_name_png_to_jpg is case-insensitive on the extension", {
+  expect_equal(small_name_png_to_jpg("photo.PNG", "_small"), "photo_small.jpg")
 })
 
-test_that("small_name_png works with a custom suffix", {
-  expect_equal(small_name_png("photo.png", "_thumb"), "photo_thumb.png")
+test_that("small_name_png_to_jpg works with a custom suffix", {
+  expect_equal(small_name_png_to_jpg("photo.png", "_thumb"), "photo_thumb.jpg")
 })
 
-test_that("small_name_png handles filenames with dots in the stem", {
-  expect_equal(small_name_png("my.photo.png", "_small"), "my.photo_small.png")
+test_that("small_name_png_to_jpg handles filenames with dots in the stem", {
+  expect_equal(small_name_png_to_jpg("my.photo.png", "_small"), "my.photo_small.jpg")
 })
 
 # compress_image ----------------------------------------------------------

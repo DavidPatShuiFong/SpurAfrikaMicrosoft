@@ -44,6 +44,7 @@
 #' @param file_prefix_regex Logical. If `TRUE`, `file_prefix` is treated as a
 #'   regular expression passed to [grepl()] rather than a literal prefix
 #'   (e.g. `"^2026(04|05)"` to match April or May 2026). Default `FALSE`.
+#' @param n_workers Integer. Number of parallel processes. Default `1`
 #' @param dry_run Logical. If `TRUE` (the default), report planned actions
 #'   without uploading anything.
 #'
@@ -69,10 +70,16 @@ compress_sharepoint_image <- function(
     small_suffix        = "_small",  # appended before extension e.g. photo_small.jpg
     file_prefix         = NULL,      # only process files starting with this string (NULL = all)
     file_prefix_regex   = FALSE,     # treat file_prefix as a regular expression
+    n_workers           = 1,         # number of parallel processes
     dry_run             = TRUE       # TRUE = report actions without uploading. FALSE = upload
 ) {
 
   tictoc::tic() # start timer
+
+  if (n_workers > 1)
+    future::plan(strategy = future::multisession, workers = n_workers)
+  else
+    future::plan(strategy = future::sequential)
 
   cli::cli_h1("SharePoint JPG and PNG Compressor")
   cli::cli_alert_info("Site   : {sharepoint_site_url}")
@@ -90,14 +97,21 @@ compress_sharepoint_image <- function(
   # Phase 1: scan folder tree — collect all target images sequentially
   # -----------------------------------------------------------------------------
 
-  targets <- collect_targets(root, sharepoint_folder, small_suffix,
-                             file_prefix = file_prefix, file_prefix_regex = file_prefix_regex)
+  progressr::handlers(progressr::handler_cli(
+    format="{cli::pb_spin} Top-level folder {cli::pb_current}/{cli::pb_total} {cli::pb_status} | ETA: {cli::pb_eta}",
+    intrusiveness = 10
+  ))
+
+  targets <- progressr::with_progress(
+    collect_targets(root, sharepoint_folder, small_suffix,
+                    file_prefix = file_prefix, file_prefix_regex = file_prefix_regex)
+  )
   cli::cli_alert_info("Found {length(targets)} image{?s} to evaluate")
 
   # -----------------------------------------------------------------------------
   # Phase 2: process files in parallel with a progress bar
   #
-  # process_files is defined inside this function so purrr serialises it with its
+  # process_files is defined inside this function so furrr serialises it with its
   # captured environment (quality, max_width_px, dry_run, compress_image).
   # -----------------------------------------------------------------------------
 
@@ -139,16 +153,18 @@ compress_sharepoint_image <- function(
     })
   }
 
-  progressr::handlers("cli")
+  progressr::handlers(progressr::handler_cli(
+    format="{cli::pb_spin} Image file {cli::pb_current}/{cli::pb_total} {cli::pb_status} | ETA: {cli::pb_eta}",
+    intrusiveness = 10
+  ))
+
   results <- progressr::with_progress({
     p <- progressr::progressor(steps = length(targets))
-    purrr::map(targets, function(t) {
+    furrr::future_map(targets, function(t) {
       result <- process_files(t)
       p()
       result
-    }
-    # if we used furrr::future_map we would need to set random number options
-    # ,.options = furrr::furrr_options(seed = TRUE)
+    },.options = furrr::furrr_options(seed = TRUE)
     )
   })
 
@@ -199,8 +215,7 @@ compress_sharepoint_image <- function(
   if (length(compressed_results)) {
     savings <- vapply(compressed_results, `[[`, numeric(1), "saving")
     cli::cli_alert_info(
-      "Average size reduction: {round(mean(savings), 1)}%  |  ",
-      "Range: {round(min(savings), 1)}% to {round(max(savings), 1)}%"
+      "Average size reduction: {round(mean(savings), 1)}%  |  Range: {round(min(savings), 1)}% to {round(max(savings), 1)}%"
     )
   }
 
@@ -259,70 +274,73 @@ compress_image <- function(raw_bytes, quality = 60L, max_width = 1920L) {
 
 #' @noRd
 collect_targets <- function(folder, path, small_suffix,
-                            file_prefix = NULL, file_prefix_regex = FALSE, .pb = NULL) {
+                            file_prefix = NULL, file_prefix_regex = FALSE, toplevel = TRUE) {
   # Recursively walk `folder` and return a flat list of target-file descriptors.
   # Each descriptor is a named list: folder, item_name, full_path,
   # expected_small, small_exists.
   # file_prefix: when non-NULL, only include images matching this string/regex.
-  # .pb: cli progress bar id; created at the top level and passed through recursion.
   #
-  # Returns lists
+  # Returns lists:
   #   folder
   #   item_name (file name)
   #   full_path
-  #   expected_small (file name to use for small version. will always be a .jpg)
-  #   small_exists (does a small version of the file already exist - either .jpg or .png)
+  #   expected_small (file name to use for small version; always .jpg)
+  #   small_exists (TRUE if a small version already exists, in either .jpg or .png)
+  #
+  # progressr::with_progress() must be active in the caller; this function only
+  # creates a progressor whose signals relay up to that outer context — including
+  # from recursive calls running inside furrr workers.
 
-  top_level <- is.null(.pb)
-  if (top_level) {
-    .pb <- cli::cli_progress_bar(
-      name        = "Scanning",
-      total       = NA,
-      clear       = FALSE,
-      .auto_close = FALSE
-    )
-  }
-
-  # Show which folder is being listed (the slow API call)
-  cli::cli_progress_update(id = .pb, status = path, inc = 0L)
   items <- folder$list_items()
 
   small_files <- items$name[grepl(
     paste0(small_suffix, "\\.(jpg|png)$"), items$name, ignore.case = TRUE
   )]
 
-  targets <- list()
+  # One progressor at the top level search, signals relay to the caller's with_progress().
+  if (toplevel)
+    p <- progressr::progressor(steps = nrow(items), message = paste("Scanning:", path))
 
-  purrr::pmap(items, function(...) {
+  item_results <- furrr::future_pmap(items, function(...) {
     item  <- list(...)
     nm    <- item$name
     isdir <- isTRUE(item$isdir)
+    if (toplevel)
+      p()
 
     if (isdir) {
-      sub     <- folder$get_item(nm)
-      targets <<- c(targets, collect_targets(sub, fs::path(path, nm), small_suffix,
-                                             file_prefix, file_prefix_regex, .pb))
+      subfolder <- folder$get_item(nm)
+      collect_targets(subfolder, fs::path(path, nm), small_suffix,
+                      file_prefix, file_prefix_regex, toplevel = FALSE)
     } else if (
       (is_target_jpg(nm, small_suffix) || is_target_png(nm, small_suffix)) &&
       (is.null(file_prefix) ||
        if (file_prefix_regex) grepl(file_prefix, nm) else startsWith(nm, file_prefix))
     ) {
-      cli::cli_progress_update(id = .pb, inc = 1L)
-      # 'small' version of image will always be JPG, even if original is PNG
-      exp_small <- if (grepl("\\.jpg$", nm, ignore.case = TRUE))
-        small_name_jpg(nm, small_suffix) else small_name_png_to_jpg(nm, small_suffix)
-      targets   <<- c(targets, list(list(
+      is_png    <- grepl("\\.png$", nm, ignore.case = TRUE)
+      # 'small' version is always .jpg, even when the source is .png
+      exp_small <- if (is_png)
+        small_name_png_to_jpg(nm, small_suffix)
+      else
+        small_name_jpg(nm, small_suffix)
+      # For PNG source files a pre-existing small version could be either
+      # _small.jpg (normal output) or _small.png (legacy)
+      small_exists <- exp_small %in% small_files ||
+        (is_png && sub("\\.png$", paste0(small_suffix, ".png"), nm,
+                       ignore.case = TRUE) %in% small_files)
+      list(list(
         folder         = folder,
         item_name      = nm,
         full_path      = fs::path(path, nm),
         expected_small = exp_small,
-        small_exists   = exp_small %in% small_files
-      )))
+        small_exists   = small_exists
+      ))
+    } else {
+      list()
     }
   })
 
-  if (top_level) cli::cli_progress_done(id = .pb)
-  targets
+  purrr::list_flatten(item_results)
 }
 
 # Null-coalescing operator (available in R 4.4+ natively; defined here for compat)
